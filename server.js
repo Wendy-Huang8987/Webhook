@@ -5,10 +5,16 @@ const path = require('path');
 const line = require('@line/bot-sdk');
 const crypto = require('crypto');
 const app = express();
+const axios = require('axios');
 
 const config = {
   channelAccessToken:'HbE2WH+aV+xOKsJ98fJo07NeWqIhBkqzGUzFn8csmtkEY0Kunr7iQbawiEhzlEW66yA8lGM6cnnh1EY640pgq7Vf+Gh5BrG2kNcDYThGBKDwjkUqwqaLrmStk9ZU72TxhHfh1l3HOgBoplAqxszEXQdB04t89/1O/w1cDnyilFU=',
   channelSecret:'68933b92d819be3d9ca98d8796fdb5ba'
+};
+// 設定 axios 的 headers
+const headers = {
+  'Content-Type': 'application/json',
+  'Authorization': `Bearer ${config.channelAccessToken}`
 };
 
 // 加載 SSL 憑證
@@ -24,7 +30,6 @@ app.get('/', (req, res) => {
 
 // 中间件获取原始请求体
 app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf.toString(); }}));
-
 
 app.post('/webhook', line.middleware(config), (req, res) => {
   // 获取签名
@@ -71,8 +76,11 @@ async function handleEvent(event) {
 async function handleFileUpload(event, type) {
   const messageId = event.message.id;   
   const userId = event.source.userId;  // 获取用户ID
+  const groupId = event.source.groupId;
+  
+  console.log(groupId)
   let fileName;
-
+  console.log(userId)
   if (!userId) {
     console.error('无法获取用户ID');
     return;
@@ -95,20 +103,25 @@ async function handleFileUpload(event, type) {
   }
   
   try {
-    let userprofile = await client.getProfile(userId);
+    //let userprofile = await client.getProfile(userId);
+
     const stream = await client.getMessageContent(messageId);
-    
-    const userDir = path.join(__dirname, 'downloads', userprofile.displayName);
-    if (!fs.existsSync(userDir)) {
-      fs.mkdirSync(userDir, { recursive: true });
-    }
+    axios.get('https://api.line.me/v2/bot/group/'+groupId+'/member/'+ userId)
+    .then(res=>{
+      console.log(res)
+      const userDir = path.join(__dirname, 'downloads', res.displayName);
+      if (!fs.existsSync(userDir)) {
+        fs.mkdirSync(userDir, { recursive: true });
+      }
 
-    const filePath = path.join(userDir, fileName);
-    
-    const writable = fs.createWriteStream(filePath);
-    stream.pipe(writable);
+      const filePath = path.join(userDir, fileName);
+      
+      const writable = fs.createWriteStream(filePath);
+      stream.pipe(writable);
 
-    console.log(`文件 ${fileName} 已成功下载至 ${filePath}`);
+      console.log(`文件 ${fileName} 已成功下载至 ${filePath}`);
+    }).catch(err=>console.log(err))
+      
   } catch (error) {
     console.error(`文件下载失败: ${error}`);
   }
