@@ -31,6 +31,9 @@ app.get('/', (req, res) => {
 // 中间件获取原始请求体
 app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf.toString(); }}));
 
+// 用來存儲群組 ID 和群組名稱的對應關係
+const groupRegistry = {};
+
 app.post('/webhook', line.middleware(config), (req, res) => {
   // 获取签名
   const signature = req.headers['x-line-signature'];
@@ -59,75 +62,122 @@ app.post('/webhook', line.middleware(config), (req, res) => {
 
 // 處理每個事件
 async function handleEvent(event) {
-  // 只處理檔案上傳的消息事件
+  if (event.source.type !== 'group') {
+    // 忽略非群組的訊息
+    console.log('收到非群組的訊息，將忽略');
+    return replyMessage(event.replyToken, '此 Bot 僅支援群組檔案備份功能，請將 Bot 添加到群組中。');
+  }
+  // 只處理消息事件
   if (event.type === 'message') {
-    if (event.message.type === 'file') {
-      return handleFileUpload(event, 'file');
-    } else if (event.message.type === 'image') {
-      return handleFileUpload(event, 'image');
-    } else if (event.message.type === 'video') {
-      return handleFileUpload(event, 'video');  // 增加视频消息处理
+    if (event.message.type === 'text' && event.message.text.startsWith('!register')) {
+      // 註冊群組名稱
+      const groupId = event.source.groupId;
+      const groupName = event.message.text.replace('!register', '').trim();
+
+      if (groupName) {
+        groupRegistry[groupId] = groupName; // 註冊名稱
+        return replyMessage(event.replyToken, `群組名稱已成功註冊為：${groupName}`);
+      } else {
+        return replyMessage(event.replyToken, '請輸入正確的群組名稱，如：!register GroupName');
+      }
+    } else if (['file', 'image', 'video'].includes(event.message.type)) {
+      // 檢查檔案上傳事件
+      return handleFileUpload(event);
     }
   }
   return Promise.resolve(null);
 
 }
 // 處理檔案上傳的邏輯
-async function handleFileUpload(event, type) {
+async function handleFileUpload(event) {
   const messageId = event.message.id;   
   const userId = event.source.userId;  // 获取用户ID
-  const groupId = event.source.groupId;
-  
-  console.log(groupId)
+  const groupId = event.source.groupId; // 获取群组ID
+  const registeredName = groupRegistry[groupId]; // 获取已注册的群组名称
   let fileName;
-  console.log(userId)
+  console.log('User ID:', userId);
   if (!userId) {
-    console.error('无法获取用户ID');
+    console.error('無法獲取用戶ID');
     return;
   }
-
-  if (type === 'file') {
-    fileName = event.message.fileName;  // 获取文件名
-    console.log('收到文件消息：', { messageId, fileName });
-
-    if (!fileName) {
-      console.error('文件名称不存在！');
-      return;
+  if(registeredName){
+    // 確定檔案名稱
+    if (event.message.type === 'file') {
+      fileName = event.message.fileName;  // 获取文件名
+      console.log('收到文件消息：', { messageId, fileName });
+    } else if (event.message.type === 'image') {
+      fileName = `${messageId}.jpg`;  // 对于图片，使用 messageId 作为文件名
+      console.log('收到圖片消息：', { messageId });
+    } else if (event.message.type === 'video') {
+      fileName = `${messageId}.mp4`;  // 对于视频，使用 messageId 作为文件名
+      console.log('收到影片消息：', { messageId });
     }
-  } else if (type === 'image') {
-    fileName = `${messageId}.jpg`;  // 对于图片，使用 messageId 作为文件名
-    console.log('收到图片消息：', { messageId });
-  } else if (type === 'video') {
-    fileName = `${messageId}.mp4`;  // 对于视频，使用 messageId 作为文件名，假设是 mp4 格式
-    console.log('收到视频消息：', { messageId });
+  }else{
+    return replyMessage(event.replyToken, '請先註冊正確的群組名稱，如:!register YourGroupName');
   }
   
+  
   try {
-    //let userprofile = await client.getProfile(userId);
-
+    // 下載檔案內容
     const stream = await client.getMessageContent(messageId);
-    axios.get('https://api.line.me/v2/bot/group/'+groupId+'/member/'+ userId)
-    .then(res=>{
-      console.log(res)
-      const userDir = path.join(__dirname, 'downloads', res.displayName);
-      if (!fs.existsSync(userDir)) {
-        fs.mkdirSync(userDir, { recursive: true });
-      }
 
-      const filePath = path.join(userDir, fileName);
-      
-      const writable = fs.createWriteStream(filePath);
-      stream.pipe(writable);
+    // 獲取使用者的顯示名稱
+    const headers = {
+      'Authorization': `Bearer ${config.channelAccessToken}`
+    };
 
+    const res = await axios.get(`https://api.line.me/v2/bot/group/${groupId}/member/${userId}`, { headers });
+    
+    const userDir = path.join(__dirname, 'downloads', registeredName, res.data.displayName);
+
+    // 確保資料夾存在
+    if (!fs.existsSync(userDir)) {
+      fs.mkdirSync(userDir, { recursive: true });
+    }
+
+    const filePath = path.join(userDir, fileName);
+    const writable = fs.createWriteStream(filePath);
+    
+    // 将流写入文件
+    stream.pipe(writable);
+
+    writable.on('finish', () => {
       console.log(`文件 ${fileName} 已成功下载至 ${filePath}`);
-    }).catch(err=>console.log(err))
-      
+    });
+
+    writable.on('error', (error) => {
+      console.error(`文件下载失败: ${error}`);
+    });
   } catch (error) {
     console.error(`文件下载失败: ${error}`);
   }
 }
 
+// 回覆訊息函數
+function replyMessage(replyToken, message) {
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${config.channelAccessToken}`
+  };
 
+  const body = {
+    replyToken: replyToken,
+    messages: [
+      {
+        type: 'text',
+        text: message
+      }
+    ]
+  };
+
+  axios.post('https://api.line.me/v2/bot/message/reply', body, { headers })
+    .then(() => {
+      console.log('Reply message sent successfully');
+    })
+    .catch(error => {
+      console.error('Error sending reply message:', error);
+    });
+}
 // 建立 HTTPS 伺服器
 https.createServer(sslOptions, app).listen(23457, () => {
   console.log('HTTPS server running on port 23457');
