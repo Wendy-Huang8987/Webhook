@@ -81,8 +81,8 @@ async function handleEvent(event) {
       const registeredName = event.message.text.replace('#G', '').trim();
 
       if (registeredName) {
-        groupRegistry[groupId] = registeredName; // 註冊名稱
-        return replyMessage(event.replyToken, `群組名稱已成功註冊為：${registeredName}`);
+        
+        return registerGroupName(groupId, registeredName, event.replyToken);
       } else {
         return replyMessage(event.replyToken, '請輸入正確的群組名稱，如：#G registeredName');
       }
@@ -93,6 +93,37 @@ async function handleEvent(event) {
   }
   return Promise.resolve(null);
 
+}
+// 註冊群組名稱
+async function registerGroupName(groupId, groupName, replyToken) {
+  try {
+    await mongoClient.connect();
+    const db = mongoClient.db("LineCopy");
+    const collection = db.collection("groupName");
+
+    // 檢查群組名稱是否已被使用
+    const existingGroupWithName = await collection.findOne({ groupName: groupName });
+    if (existingGroupWithName) {
+      return replyMessage(replyToken, `群組名稱「${groupName}」已被其他群組使用，請選擇其他名稱。`);
+    }
+
+    // 檢查群組ID是否已註冊
+    const existingGroupWithId = await collection.findOne({ groupId: groupId });
+    if (existingGroupWithId) {
+      return replyMessage(replyToken, `您的群組已經註冊過，名稱為：${existingGroupWithId.groupName}`);
+    }
+   
+    groupRegistry[groupId] = groupName; // 註冊名稱
+    // 新註冊
+    await collection.insertOne({ groupId: groupId, groupName: groupName,createTime:new Date().toLocaleDateString() });
+    return replyMessage(replyToken, `群組名稱已成功註冊為：${groupName}`);
+    
+  } catch (error) {
+    console.error('註冊群組名稱時發生錯誤:', error);
+    return replyMessage(replyToken, '註冊失敗，請稍後再試。');
+  } finally {
+    await mongoClient.close();
+  }
 }
 // 處理檔案上傳的邏輯
 async function handleFileUpload(event) {
@@ -147,7 +178,7 @@ if (event.message.type === 'file') {
       console.log(`文件 ${fileName} 已成功下载至 ${filePath}`);
 
     // Save record to MongoDB
-    await saveToMongoDB({
+    await savefilerecord({
       filePath: filePath,
       groupName: registeredName,
       timestamp: formatTimestamp(timestamp),
@@ -164,7 +195,7 @@ if (event.message.type === 'file') {
     console.error(`文件下载失败: ${error}`);
   }
 }
-async function saveToMongoDB(record) {
+async function savefilerecord(record) {
   try {
     await mongoClient.connect();
     const database = mongoClient.db('LineCopy');
@@ -229,53 +260,6 @@ async function generateExcelFromMongoDB() {
 }
 
 
-// async function addRecordToExcel(registeredName, userName, timestamp, filePath) {
-//   const formattedTimestamp = formatTimestamp(timestamp);
-//   const excelPath = path.join(__dirname, 'downloads', `已上傳的檔案們.xlsx`);
-//   const workbook = new exceljs.Workbook();
-//   let worksheet;
-
-//   try{
-
-//     if (fs.existsSync(excelPath)) {
-//       await workbook.xlsx.readFile(excelPath);// 讀取現有文件
-//       worksheet = workbook.getWorksheet('Records');
-//     } else {
-  
-//       worksheet = workbook.addWorksheet('Records');// 創建新工作表
-//       worksheet.columns = [
-//         { header: '上傳者', key: 'uploader', width: 20 },
-//         { header: '上傳時間', key: 'timestamp', width: 30 },
-//         { header: '檔案路徑', key: 'filePath', width: 50 },
-//         { header: '群組名稱', key: 'groupName', width: 30 }
-//       ];
-//     }
-//     // 新增資料行
-//     const newRow = worksheet.addRow([
-//       userName,
-//       formattedTimestamp,
-//       { text: '開啟檔案', hyperlink: `file://${filePath}` },
-//       registeredName
-//     ]);
-//     console.log('新增行:', newRow.values);
-
-//     // 保存文件
-//     await workbook.xlsx.writeFile(excelPath);
-
-//     // 重新讀取以驗證
-//     const verifyWorkbook = new exceljs.Workbook();
-//     await verifyWorkbook.xlsx.readFile(excelPath);
-//     const verifyWorksheet = verifyWorkbook.getWorksheet('Records');
-//     console.log(`文件保存成功。當前記錄行數: ${verifyWorksheet.rowCount}`);
-//     verifyWorksheet.eachRow((row, rowNumber) => {
-//       console.log(`Row ${rowNumber}:`, row.values);
-//     });
-
-//   } catch (error) {
-//     console.error('寫入 Excel 時發生錯誤:', error);
-//   }
-  
-// }
 
 // 回覆訊息函數
 function replyMessage(replyToken, message) {
