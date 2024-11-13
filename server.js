@@ -68,6 +68,9 @@ app.post('/webhook', line.middleware(config), (req, res) => {
 
 // 處理每個事件
 async function handleEvent(event) {
+  await mongoClient.connect();
+  const db = mongoClient.db("LineCopy");
+  const collection = db.collection("groupName");
   if (event.source.type !== 'group') {
     // 忽略非群組的訊息
     console.log('收到非群組的訊息，將忽略');
@@ -75,21 +78,40 @@ async function handleEvent(event) {
   }
   // 只處理消息事件
   if (event.type === 'message') {
+    // 檢查群組ID是否已註冊
+    const groupId = event.source.groupId;
+    const existingGroupWithId = await collection.findOne({ groupId: groupId });
+    if(existingGroupWithId){
+      groupRegistry[existingGroupWithId.groupId] = existingGroupWithId.groupName;
+    }
+
     if (event.message.type === 'text' && event.message.text.startsWith('#G')) {
       // 註冊群組名稱
-      const groupId = event.source.groupId;
       const registeredName = event.message.text.replace('#G', '').trim();
-
       if (registeredName) {
-        
         return registerGroupName(groupId, registeredName, event.replyToken);
       } else {
         return replyMessage(event.replyToken, '請輸入正確的群組名稱，如：#G registeredName');
       }
+      
     } else if (['file', 'image', 'video'].includes(event.message.type)) {
       // 檢查檔案上傳事件
       return handleFileUpload(event);
     }
+
+    // if(event.message.type === 'text'){
+    //   if (event.message.text === '查找') {
+    //     console.log("???")
+    //     // 確認這是一個回覆訊息並提取被回覆的訊息
+    //     const repliedMessage = event.message.repliedMessage;
+        
+    //     if (repliedMessage && repliedMessage.text) {
+    //       // 提取被回覆的檔案名稱
+    //       const fileName = repliedMessage.text;
+    //       console.log(fileName);
+    //     }
+    //   }
+    // }
   }
   return Promise.resolve(null);
 
@@ -101,23 +123,16 @@ async function registerGroupName(groupId, groupName, replyToken) {
     const db = mongoClient.db("LineCopy");
     const collection = db.collection("groupName");
 
-    // 檢查群組名稱是否已被使用
     const existingGroupWithName = await collection.findOne({ groupName: groupName });
     if (existingGroupWithName) {
+      // 檢查群組名稱是否已被使用
       return replyMessage(replyToken, `群組名稱「${groupName}」已被其他群組使用，請選擇其他名稱。`);
+    }else{
+      groupRegistry[groupId] = groupName; // 註冊名稱
+      // 新註冊
+      await collection.insertOne({ groupId: groupId, groupName: groupName,createTime:new Date().toLocaleDateString() });
+      return replyMessage(replyToken, `群組名稱已成功註冊為：${groupName}`);
     }
-
-    // 檢查群組ID是否已註冊
-    const existingGroupWithId = await collection.findOne({ groupId: groupId });
-    if (existingGroupWithId) {
-      return replyMessage(replyToken, `您的群組已經註冊過，名稱為：${existingGroupWithId.groupName}`);
-    }
-   
-    groupRegistry[groupId] = groupName; // 註冊名稱
-    // 新註冊
-    await collection.insertOne({ groupId: groupId, groupName: groupName,createTime:new Date().toLocaleDateString() });
-    return replyMessage(replyToken, `群組名稱已成功註冊為：${groupName}`);
-    
   } catch (error) {
     console.error('註冊群組名稱時發生錯誤:', error);
     return replyMessage(replyToken, '註冊失敗，請稍後再試。');
